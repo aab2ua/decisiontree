@@ -1,0 +1,379 @@
+---
+title: "Decision Trees"
+author: "Brian Wright"
+date: "November 27, 2017"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+Libraries
+```{r}
+library(rio)
+library(plyr)
+library(tidyverse)
+library(rpart)
+library(psych)
+library(pROC)
+#install.packages("rpart.plot")
+library(rpart.plot)
+#install.packages("rattle")
+library(rattle)
+setwd("/cloud/project/decision_trees")
+library(caret)
+install.packages("C50")
+install.packages("mlbench")
+```
+
+
+We are going to run through two different approaches to Decision Trees. 
+The first is a implementation of CART via rpart that includes a default 10 fold
+cross validation, uses gini index/impurity as the default splitting criteria
+and, creates binary nodes, and uses a complexity parameter to stop tree growth. 
+
+The second is C4.5/C5.0 which uses gain ratio (normalized information gain) 
+as the default splitting criteria, allows for incomplete data, 
+introduced pruning (though that has been add to CART) and allowed weights for
+features to be added.  C5.0 allows for boosting to  be used in the creation of
+the tree models. 
+
+
+```{r}
+tree_example <- tibble(import("parent.csv", check.names= TRUE))
+
+describe(tree_example)
+#What sticks out here? 
+
+#We want to build a classifier that can predict some characteristics of our 
+#customers what might be a good question? 
+```
+
+
+```{r}
+sum(tree_example$Parent)
+length(tree_example$Parent)
+
+(x <- 1- sum(tree_example$Parent)/length(tree_example$Parent))
+
+
+#What does .72 represent in this context? 
+
+```
+
+
+
+#reformat for exploration purposes
+```{r}
+
+#Creating a vertical dataframe for the Parent variable, just stacking the variables on top of each other. 
+
+
+tree_example_long = tree_example %>% gather(Var, #<- list of predictor variables
+                                Value,#<- the values of those predictor variables
+                                -Parent)  #<- removes everything but the parent variable
+View(tree_example_long)
+
+```
+
+
+#See what the base rate of likihood of Parent looks like for each variable
+```{r}
+# Calculate the probability of being Parent by predictor variable.
+# Since the data is binary you can take the average to get the probability.
+
+#Older way, but works well for doing multi-level group summaries, creates new 
+#variables for each group versus a summary for the entire list. 
+
+
+
+tree_example_long_form = ddply(tree_example_long, 
+                            .(Var, Value),#<- group by Var and Value, "." 
+                            #allows us to call the variables without quoting
+                            summarize,  
+                            prob_Parent = mean(Parent), #<- probability of being Parent
+                            prob_not_Parent = 1 - mean(Parent)) #<- probability of not being Parent
+
+#?ddply
+
+View(tree_example_long_form)
+#What information can we pull from this output? 
+```
+
+
+Data Preparation
+```{r}
+# In order for the decision tree algorithm to run properly, 
+# all the variables will need to be turned into factors.
+
+tree_example = lapply(tree_example, function(x) as.factor(x))
+
+#This is a handy reference on apply(), lapply(), sapply() all essentially 
+#designed to avoid for loops, especially in combination with (function (x))
+
+#https://www.r-bloggers.com/using-apply-sapply-lapply-in-r/
+
+str(tree_example)
+
+tree_example <- as_tibble(tree_example)
+
+table(tree_example$Parent)
+
+#Also want to add data labels to the target
+tree_example$Parent <- factor(tree_example$Parent,labels = c("not_parent", "parent"))
+
+```
+
+
+Train/Test Split 
+```{r}
+x <- createDataPartition(tree_example$Parent,times=1,p = 0.8,list=FALSE)
+training <- tree_example[x,]
+test <- tree_example[-x,]
+
+```
+
+
+Build the model - rpart - CART Style 
+```{r}
+# Train the tree with the rpart() function.
+# We'll need to set the seed to make the results reproducible. 
+
+#Different approaches to decision trees use different impurity measures
+#CART uses Gini; ID3 and C4.5/C5.0 use Entropy
+
+set.seed(1981)
+example_tree_gini = rpart(Parent~.,  #<- formula, response variable ~ predictors
+                           #   "." means "use all other variables in data"
+                            method = "class",#<- specify method, use "class" for tree
+                            parms = list(split = "gini"),#<- method for choosing tree split
+                            data = training,#<- data used
+                            control = rpart.control(cp=.01))
+
+#Look at the results
+example_tree_gini
+
+#View(example_tree_gini$frame)
+
+# dev - the deviance or the total sum of squares within the node, so if
+#       you divide this by the sample size in each node you get the variance
+# yval - average value of the trait at the node (for categorical values identifies the group)  
+# complexity - the value of the parameter used to make the split (gini)
+# ncompete - number of competing variables that can be considered for this split
+# nsurrogate - number of surrogate trees (used when there is missing data in the test data set, to mimic the effects of splits in the training data set)
+# yval2 - average value of the trait at the node (for categorical values identifies the group), although it can mean different things when the rpart function is used for regression trees or other analyses 
+
+
+rpart.plot(example_tree_gini, type =4, extra = 101)#package rpart.plot
+#export this to  pdf for better viewing
+
+
+#The "cptable" element includes the optimal prunning based on the complexity parameter.
+
+View(example_tree_gini$cptable)
+
+plotcp(example_tree_gini)#Produces a "elbow chart" for various cp values, it's actually a terrible chart, but somewhat useful, dashed line represents the highest cross-validated error minus the minimum cross-validated error, plus the standard deviation of the error at that tree. A reasonable choice of cp for pruning is often the leftmost value where the mean is less than the horizontal line. Not the difference between the size of tree and the nsplits. Size is the number of terminal nodes. 
+
+# Here's a summary:
+# CP - complexity parameter, or the value of the splitting criterion (gini or information gain)
+# nsplit - number of splits
+# rel error - the relative error rate for predictions for the data that generated the tree
+# xerror - cross-validated error, default cross-validation setting uses 10 folds
+# xstd - the standard derivation of cross-validated errors
+
+cptable_ex <- as_tibble(example_tree_gini$cptable)
+cptable_ex
+
+#Shows the reduction in error provided by include the variable 
+tree_example_tree_gini$variable.importance
+
+```
+
+# Test the accuracy 
+```{r}
+# Let's use the "predict" function to test our our model and then 
+# evaluate the accuracy of the results.
+example_tree_gini$frame
+
+tree_predict = predict(example_tree_gini,test, type= "class")
+
+View(as.data.frame(tree_predict))
+
+#tree_predict <- as.numeric(tree_predict)
+View(tree_predict)
+
+#Lets use the confusion matrix
+
+confusionMatrix(as.factor(tree_predict), as.factor(test$Parent), positive = "parent", dnn=c("Prediction", "Actual"), mode = "sens_spec")
+
+#What does this mean?
+
+```
+
+Hit Rate or True Classification Rate, Detection Rate and ROC
+```{r}
+# The error rate is defined as a classification of "Parent" when 
+# this is not the case, and vice versa. It's the sum of all the
+# values where a column contains the opposite value of the row.
+sum(par_conf_matrix[row(par_conf_matrix)!= col(par_conf_matrix)])
+# 59
+
+
+# The error rate divides this figure by the total number of data points
+# for which the forecast is created.
+sum(par_conf_matrix)
+# 400
+
+# Let's use these values in 1 calculation.
+par_error_rate = sum(par_conf_matrix[row(par_conf_matrix) != col(par_conf_matrix)]) / sum(par_conf_matrix)
+
+paste0("Hit Rate/True Error Rate:", par_error_rate * 100, "%")
+# "Hit Rate/True Error Rate:15.05%"
+
+
+#Detection Rate is the rate at which the algo detects the positive class in proportion to the entire classification A/(A+B+C+D) where A is poss correctly predicted
+
+par_conf_matrix
+
+par_conf_matrix[2,2]/sum(par_conf_matrix)# 16.75%, want this to be higher but only so high it can go, in a perfect model for this date it would be:
+
+table(test$Parent)
+
+
+
+par_roc <- roc(test$Parent, as.numeric(tree_predict), plot = TRUE) #Building the evaluation ROC and AUV using the predicted and original target variables 
+
+par_roc
+
+plot(par_roc)
+
+#We can adjust using a if else statement and the predicted prob
+
+tree_example_prob = predict(example_tree_gini,test, type= "prob")
+View(tree_example_prob)
+
+#Let's 
+roc(test$Parent, ifelse(tree_example_prob[,'not_parent'] >= .50,0,1), plot=TRUE)
+
+```
+
+
+#We can also prune the tree to make it less complex 
+```{r}
+set.seed(1)
+tree_example_tree_cp2 = rpart(Parent~.,                         #<- formula, response variable ~ predictors,
+                                                               #   "." means "use all other variables in data"
+                           method = "class",	                 #<- specify method, use "class" for tree
+                           parms = list(split = "gini"),       #<- method for choosing tree split
+                           data = tree_example,             #<- data used
+                           control = rpart.control(maxdepth = 4))  #<- includes depth 7, the control for additional options (could use CP, 0.01 is the default)
+
+
+
+plotcp(tree_example_tree_cp2)
+
+rpart.plot(tree_example_tree_cp2, type =4, extra = 101)
+
+cptable_ex_cp <- as.data.frame(tree_example_tree_cp2$cptable, )
+View(cptable_ex_cp)
+
+cptable_ex_cp$opt <- cptable_ex_cp$`rel error`+ cptable_ex_cp$xstd
+
+View(cptable_ex_cp)
+
+#Change the rpart.control and take a look at results.
+```
+
+
+CARET Example using C5.0: Use a new Dataset multi-class 
+```{r}
+
+winequality <- read_csv("/cloud/project/winequality-red-ddl.csv")
+View(winequality)
+str(winequality)
+table(winequality$text_rank)
+
+winequality$text_rank <- fct_collapse(winequality$text_rank,
+                                      ave=c("ave","average-ish"),
+                                      excellent = "excellent",
+                                      good = "good",
+                                      poor = c("poor","poor-ish"))
+
+split <- createDataPartition(winequality$text_rank,times=1,p = 0.8,list=FALSE)
+
+training_w <- winequality[split,]
+test_w <- winequality[-split,]
+
+```
+
+```{r}
+library(C50) #Need this to pass into caret 
+library(mlbench)
+
+#Cross validation process 
+
+fitControl <- trainControl(method = "repeatedcv",
+  number = 10,
+  repeats = 5, returnResamp="all") #setting up our cross validation
+
+# number - number of folds
+# repeats - number of times the cv is repeated, here it's 5 take the average of
+# those 5 repeats
+
+# Choose the features and classes
+
+View(training_w)
+
+features <- training_w[,c(-12,-13)]
+target <- training_w$text_rank
+
+str(features)
+str(target)
+
+grid <- expand.grid(.winnow = c(TRUE,FALSE), .trials=c(1,5,10,15,20), .model="tree" )
+
+#expand.grid - function in caret that will essentially conduct a hyper-parameter 
+# and select the best options
+
+#winnow - whether to reduce the feature space - uses a regulator/penalty
+#trails - number of boosting iterations to try, 1 indicates a single model 
+#model - type of ml model
+
+wine_mdl <- train(x=features,y=target,tuneGrid=grid,trControl=fitControl,method="C5.0"
+            ,verbose=TRUE)
+
+wine_mdl
+
+View(wine_mdl$pred)
+
+# visualize the re-sample distributions
+xyplot(wine_mdl,type = c("g", "p", "smooth"))
+
+varImp(wine_mdl)
+```
+
+Let's use the model to predict and the evaluate the performance
+```{r}
+wine_predict = predict(wine_mdl,test_w, type= "raw")
+
+View(as_tibble(wine_predict))
+
+
+#Lets use the confusion matrix
+
+confusionMatrix(as.factor(wine_predict), as.factor(test_w$text_rank), 
+                dnn=c("Prediction", "Actual"), mode = "sens_spec")
+
+table(test_w$text_rank)
+
+
+wine_predict_p = predict(wine_mdl,test_w, type= "prob")
+
+
+
+```
+
