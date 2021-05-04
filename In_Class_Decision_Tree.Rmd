@@ -1,0 +1,225 @@
+---
+title: "Decision Tree Lab"
+author: "Aarthee Baskaran, Shipra Trivedi, Sarah Abourakty"
+date: "May 5, 2021"
+output:
+  html_document:         
+    toc: TRUE
+    theme: cosmo
+    toc_float: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+Breast cancer data was used to train and test decision tree models for both single and mutli classifcation. In this lab, we will evalute the accuracy of the models and offer recommendations on how to use this model in the real world. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE, echo=FALSE}
+library(rio)
+library(plyr)
+library(tidyverse)
+library(rpart)
+library(psych)
+library(pROC)
+#install.packages("rpart.plot")
+library(rpart.plot)
+#install.packages("rattle")
+library(rattle)
+setwd("/cloud/project/decision_trees")
+library(caret)
+library(C50)
+library(mlbench)
+#install.packages("C50")
+#install.packages("mlbench")
+```
+# PR. status Decision Tree 
+
+```{r, include=FALSE, echo=FALSE}
+#1 Load the data and ensure the column names don't have spaces, hint check.names.  
+stuff <- tibble(import("clinical_breast_cleaned.csv", check.names= TRUE))
+excluded = c("ER.Status")
+
+data <- select(stuff, !c("ER.Status"))
+```
+
+```{r, include=FALSE, echo=FALSE}
+#4 Split your data into test and train using the caret
+x <- createDataPartition(data$PR.Status,times=1,p = 0.8,list=FALSE)
+training <- data[x,]
+test <- data[-x,]
+```
+
+```{r, include=FALSE, echo=FALSE}
+#6 Ok now determine the baserate for the classifier, what does this number mean.  
+#For the multi-class this will be the individual percentages for each class. 
+baserate = sum(data$PR.Status)/105
+```
+
+```{r, include=FALSE, echo=FALSE}
+#7 Build your model using the default settings
+# Train the tree with the rpart() function.
+# We'll need to set the seed to make the results reproducible. 
+
+#Different approaches to decision trees use different impurity measures
+#CART uses Gini; ID3 and C4.5/C5.0 use Entropy
+
+set.seed(1981)
+cancer_tree_gini = rpart(PR.Status~.,  #<- formula, response variable ~ predictors
+                           #   "." means "use all other variables in data"
+                            method = "class",#<- specify method, use "class" for tree
+                            parms = list(split = "gini"),#<- method for choosing tree split
+                            data = training,#<- data used
+                            control = rpart.control(cp=.01))
+```
+
+```{r, include=FALSE, echo=FALSE}
+#8 View the results, what is the most important variable for the tree? 
+cancer_tree_gini
+```
+
+Below, we generated the decision tree from the PR. status data (excluding ER. status)
+
+```{r, echo=FALSE}
+#9 Plot the tree using the rpart.plot package (CART only).
+rpart.plot(cancer_tree_gini, type = 4, extra = 101)
+```
+
+This figure produces an elbow chart of the tree size. It confirms that the tree should have 5 nodes, as observed above, based on the complexity parameter and standard deviation. 
+
+```{r, echo=FALSE}
+#10 plot the cp chart and note the optimal size of the tree (CART only).
+plotcp(cancer_tree_gini)
+```
+
+```{r, include=FALSE, echo=FALSE}
+cptable_ex <- as_tibble(cancer_tree_gini$cptable)
+cptable_ex
+
+#Shows the reduction in error provided by include the variable 
+cancer_tree_gini$variable.importance
+```
+
+```{r, include=FALSE, echo=FALSE}
+#11 Use the predict function and your models to predict the target variable using
+#test set. 
+cancer_tree_gini$frame
+
+tree_predict = predict(cancer_tree_gini, test, type = "class")
+```
+
+```{r, echo=FALSE}
+#13 Use the the confusion matrix function in caret to 
+#check a variety of metrics and comment on the metric that might be best for 
+#each type of analysis. 
+confusionMatrix(as.factor(tree_predict), as.factor(test$PR.Status), positive = "1", dnn=c("Prediction", "Actual"), mode = "sens_spec")
+```
+
+This model has a kappa value of 0.16 and a balanced accuracy of 0.5833; this was improved compared to the initial baserate of 0.514. The sensitiviity and specificity were 0.667 and 0.5, respectively. 
+
+```{r, include=FALSE, echo=FALSE}
+#14 Generate a ROC and AUC output, interpret the results
+
+par_roc <- roc(test$PR.Status, as.numeric(tree_predict), plot = TRUE) #Building the evaluation ROC and AUV using the predicted and original target variables 
+
+par_roc
+```
+
+```{r, echo=FALSE}
+plot(par_roc)
+```
+
+```{r, include=FALSE, echo=FALSE}
+#We can adjust using a if else statement and the predicted prob
+
+cancer_example_prob = predict(cancer_tree_gini,test, type= "prob")
+
+#Let's 
+roc(test$PR.Status, ifelse(cancer_example_prob[,'0'] >= .50,0,1), plot=TRUE)
+```
+
+The area under the curve was observed as 0.5833. The ROC curve indicated this model is a fair fit.  
+
+# Tumor Classification Decision Tree 
+
+```{r, include=FALSE, echo=FALSE}
+#15 Follow the same steps for the multi-class target, tumor, aside from step 1, 
+# 2 and 14. For step 13 compare to the four base rates and see how you did. 
+stuff_2 = read.csv("clinical_breast_cleaned.csv")
+data_2 <- select(stuff_2, !c("ER.Status"))
+
+y <- createDataPartition(data_2$Tumor,times=1,p = 0.8,list=FALSE)
+training_multi <- data_2[y,]
+test_multi <- data_2[-y,]
+```
+
+```{r, include=FALSE, echo=FALSE}
+#multi class baserates
+T1 = data_2%>%
+  filter(Tumor == "T1")
+
+T2 = data_2%>%
+  filter(Tumor == "T2")
+
+T3 = data_2%>%
+  filter(Tumor == "T3")
+
+T4 = data_2%>%
+  filter(Tumor == "T4")
+
+T1_baserate = nrow(T1)/105
+T2_baserate = nrow(T2)/105
+T3_baserate = nrow(T3)/105
+T4_baserate = nrow(T4)/105
+```
+
+```{r, include=FALSE, echo=FALSE}
+library(C50) #Need this to pass into caret 
+library(mlbench)
+
+fitControl <- trainControl(method = "repeatedcv",
+  number = 10,
+  repeats = 5, returnResamp="all") #setting up our cross validation
+
+features <- training_multi[,c(-5)]
+target <- training_multi$Tumor
+
+str(features)
+str(target)
+
+grid <- expand.grid(.winnow = c(TRUE,FALSE), .trials=c(1,5,10,15,20), .model="tree" )
+
+tumor_mdl <- train(x=features,y=target, tuneGrid=grid, trControl=fitControl, method="C5.0"
+            ,verbose=TRUE)
+
+tumor_predict = predict(tumor_mdl, test_multi, type = "raw")
+```
+
+```{r, echo=FALSE}
+# visualize the re-sample distributions
+xyplot(tumor_mdl,type = c("g", "p", "smooth"))
+```
+
+```{r, include=FALSE, echo=FALSE}
+varImp(tumor_mdl)
+```
+
+```{r, echo=FALSE}
+confusionMatrix(as.factor(tumor_predict), as.factor(test_multi$Tumor), dnn=c("Prediction", "Actual"), mode = "sens_spec")
+```
+
+This model is fairly accurate with a kappa value of 0.5833. The initial baserates for T1, T2, T3, and T4 were 0.143, 0.619, 0.181, and 0.057, respectively. This model predicted prevalence value for the above tumors classes as 0.15, 0.65, 0.15, and 0.05, respectively. This was observed with balanced accuracies of 0.833, 0.747, 0.637, and 1. 
+
+# Recommendations
+
+***PR Status Classification Model***
+
+We concluded that it was not the best model for predicting presence of breast cancer since the result cannot only depend on PR. status and other factors should be taken into account. We recommend that this model can be used as an aid in diagnostics but should not be the sole tool used. 
+
+***Tumor Classification Model*** 
+
+Most of this dataset is comprised of patients with tumor 2 classes; if we had a dataset with more tumor classfications, the model's predictive accuracy for the other classes can also be improved. We recommend that this model is used in conjuction with other diagnostic tools to breast cancer occurence in patients. 
+
+
